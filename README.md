@@ -20,6 +20,7 @@ Repository Layout
 - `scripts/object_detection.py` – entry point for YOLOv8 vehicle tracking with ROI selection, CSV logging, and optional annotated-video export.
 - `scripts/detected_photos_crop.py` – consumes `vehicle_positions.csv` plus the source video to crop per-vehicle snapshots (organized by ID under `output/cropped_photos`).
 - `scripts/best_SS.py` – ranks crops per vehicle using sharpness/contrast/size heuristics and renames the best image to `BEST.jpg`.
+- `scripts/plate_reading.py` – loads each vehicle’s `BEST.jpg` (Cars by default) and uses EasyOCR to extract/license plate text, saving annotated evidence plus `license_plate_results.csv`.
 - `scripts/helmet_detection.py` – runs the helmet model on `Bikes_Motorcycles/id_xxx` crops, saves annotated violations, and logs `helmet_results.csv`.
 - `scripts/seatbelt_detection.py` – runs the seatbelt model on `Cars/id_xxx` crops, writes `seatbelt_results.csv`, and saves annotated detections.
 - `scripts/vehicle_closeness.py` – replays the video with CSV positions to highlight unsafe proximity pairs, exporting video plus `violations.csv` / `all_pairs.csv`.
@@ -42,11 +43,14 @@ End-to-End Pipeline
 3. **Best Screenshot Selection (optional)**
    - `python scripts/best_SS.py`
    - Scores each crop on size, sharpness, contrast, frame recency, and brightness to retain the single “BEST.jpg” per vehicle (and optionally delete the others).
-4. **Violation-Specific Models**
+4. **License Plate Reading (optional)**
+   - `python scripts/plate_reading.py`
+   - Uses EasyOCR to read plates from each vehicle’s `BEST.jpg`, saves annotated copies in `output/license_plate_results/`, and logs text/confidence to `license_plate_results.csv`. Defaults to the `Cars` category but can be extended.
+5. **Violation-Specific Models**
    - **Helmet** – `python scripts/helmet_detection.py`; outputs annotated violations in `output/helmet_results/Bikes_Motorcycles` plus `helmet_results.csv`.
    - **Seatbelt** – `python scripts/seatbelt_detection.py`; outputs annotated detections in `output/seatbelt_results/Cars` plus `seatbelt_results.csv`.
    - **Phone Distraction** – `python scripts/phone_detection.py`; waits for you to drop still images into `phone_detection_test/test_images`, then annotates and logs results in that folder.
-5. **Scenario Analyses**
+6. **Scenario Analyses**
    - **Red Light** – `python scripts/red_light.py` replays the video, simulates configurable red/green durations, and highlights vehicles crossing the stop line while red.
    - **Vehicle Closeness** – `python scripts/vehicle_closeness.py` uses per-frame centers to find pairs within `DISTANCE_THRESHOLD` pixels, writing both violation-only and all-pairs CSVs plus a video overlay.
 
@@ -58,6 +62,7 @@ Configuration Highlights
   - All outputs go under `output/`
 - `object_detection.py` exposes a `SPEED_OPTIMIZATIONS` dictionary for frame skipping, resize ratio, ROI-only inference, and display / logging toggles.
 - `detected_photos_crop.py` controls crop frequency (`max_per_id`, `zones_per_id`, `max_per_zone`) and asymmetric padding to prefer front-facing captures.
+- `plate_reading.py` limits processing to IDs that already have a `BEST.jpg` image and uses configurable confidence / plate-length thresholds; extend `CATEGORIES` if you keep plates for bikes or other folders.
 - `helmet_detection.py` and `seatbelt_detection.py` treat non-detections as violations by default; adjust logic if you need stricter confidence handling.
 - `vehicle_closeness.py` can exclude bikes (`INCLUDE_BIKES=False`) or adjust `DISTANCE_THRESHOLD` to match camera geometry.
 - `phone_detection.py` requires manual image placement and supports AVIF-to-JPG conversion fallback.
@@ -73,7 +78,7 @@ Running the Project
    - Put the raw surveillance video in `input/`.
    - Ensure the pretrained models exist in `Models/` (already included).
 3. **Execute modules**
-   - Detection/tracking → cropping → (optional) best screenshot → violation-specific analyses, as outlined above.
+- Detection/tracking → cropping → (optional) best screenshot → (optional) plate reading → violation-specific analyses, as outlined above.
 4. **Review outputs**
    - CSV logs (`output/*.csv`) for structured evidence.
    - Annotated videos/images inside `output/` subdirectories for visual proof.
