@@ -69,10 +69,27 @@ Configuration Highlights
 
 Running the Project
 -------------------
-1. **Create the environment**
+1. **Create the Environment**
    ```bash
-   conda env create -n itvds -f requirements.txt
-   conda activate itvds
+   conda create -n itvds_env python=3.10 -y
+   conda activate itvds_env
+   ```
+
+2. **Install System Dependencies (Conda)**
+   ```bash
+   conda install -c conda-forge bzip2 libffi libzlib openssl sqlite tk xz zlib ucrt vs2015_runtime -y
+   ```
+
+3. **Install Python Dependencies (Pip)**
+   ```bash
+   # Core Libraries
+   pip install certifi charset-normalizer contourpy cycler easyocr filelock fonttools fsspec idna jinja2 kiwisolver lap markupsafe matplotlib mpmath networkx numpy opencv-python packaging pandas polars psutil pyparsing python-dateutil pytz pyyaml requests scipy six sympy urllib3 wheel
+
+   # PyTorch (CPU)
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+   # YOLO & PaddleOCR
+   pip install ultralytics paddlepaddle paddleocr
    ```
 2. **Place assets**
    - Put the raw surveillance video in `input/`.
