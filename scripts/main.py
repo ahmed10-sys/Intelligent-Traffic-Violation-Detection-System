@@ -9,11 +9,11 @@ from datetime import datetime
 # ============================================
 
 # Toggle individual steps here (set to False to skip)
-ENABLE_OBJECT_DETECTION = False       # 1) object_detection.py
-ENABLE_CROPPING = False                # 2) detected_photos_crop.py
-ENABLE_BEST_SS = False                 # 3) best_SS.py
-ENABLE_LICENSE_PLATE_DETECTOR = False   # 4) license_plate_detector.py
-ENABLE_PLATE_READING = False            # 5) plate_reader.py
+ENABLE_OBJECT_DETECTION = True       # 1) object_detection.py
+ENABLE_CROPPING = True                # 2) detected_photos_crop.py
+ENABLE_BEST_SS = True                 # 3) best_SS.py
+ENABLE_LICENSE_PLATE_DETECTOR = True   # 4) license_plate_detector.py
+ENABLE_PLATE_READING = True            # 5) plate_reader.py
 ENABLE_SEATBELT_DETECTION = True         # 5) seatbelt_detection.py
 ENABLE_HELMET_DETECTION = True        # 6) helmet_detection.py
 ENABLE_RED_LIGHT = False               # 7) red_light.py
