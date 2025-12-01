@@ -36,6 +36,11 @@ def main():
 
     df_master['join_id'] = df_master['Vehicle_ID'].apply(normalize_id)
     
+    # FILTER: Only keep Cars (exclude bikes) as per user request
+    # Note: master_violation_log.csv only contains vehicles where a plate was DETECTED (crop exists).
+    df_master = df_master[df_master['Category'] == 'Cars']
+    print(f"✅ Filtered for Cars only: {len(df_master)} records")
+
     # Initialize Violation List for each row
     # We will store a list of dictionaries: [{'violation': 'No Seatbelt', 'image': 'path/to/img'}, ...]
     df_master['Violations_Data'] = [[] for _ in range(len(df_master))]
@@ -49,9 +54,17 @@ def main():
             df_seatbelt['vehicle_id'] = df_seatbelt['vehicle_id'].astype(str)
             df_seatbelt['join_id'] = df_seatbelt['vehicle_id'].apply(normalize_id)
             
-            # Filter for violations only
-            seatbelt_violations = df_seatbelt[df_seatbelt['label'] == 'no_seatbelt']
+            # DEBUG: Print unique labels found
+            unique_labels = df_seatbelt['label'].unique()
+            print(f"ℹ️ Seatbelt Labels Found: {unique_labels}")
             
+            # Filter for violations only (Case insensitive check for 'no' and 'seatbelt')
+            # Common labels: 'no_seatbelt', 'no-seatbelt', 'No Seatbelt'
+            seatbelt_violations = df_seatbelt[df_seatbelt['label'].astype(str).str.lower().str.contains('no') & 
+                                              df_seatbelt['label'].astype(str).str.lower().str.contains('seatbelt')]
+            
+            print(f"ℹ️ Found {len(seatbelt_violations)} seatbelt violations.")
+
             # Create a map: join_id -> list of (violation, image_path)
             seatbelt_map = {}
             for _, row in seatbelt_violations.iterrows():
@@ -210,7 +223,9 @@ def main():
         if len(unique_violations) > max_violations:
             max_violations = len(unique_violations)
             
-        final_rows.append(new_row)
+        # FILTER: Only add to final list if there is at least one violation
+        if len(unique_violations) > 0:
+            final_rows.append(new_row)
         
     # Create DataFrame
     df_final = pd.DataFrame(final_rows)

@@ -81,8 +81,8 @@ def upload_image_to_cloudinary(relative_path):
     if pd.isna(relative_path) or relative_path == "":
         return None
 
-    # Fix path slashes and join with base directory
-    # CSV has "../output...", so we clean it up
+    # 1. Clean Path and create the FULL local path
+    # Make sure BASE_IMAGE_DIR is defined at the top of your script!
     clean_path = relative_path.replace('/', '\\').replace('..\\', '')
     full_local_path = os.path.join(BASE_IMAGE_DIR, clean_path)
 
@@ -90,12 +90,21 @@ def upload_image_to_cloudinary(relative_path):
         print(f"Warning: File not found locally: {full_local_path}")
         return None
 
+    # 2. GENERATE A CONSISTENT PUBLIC ID
+    # Use the cleaned path, remove the file extension
+    base_name = os.path.splitext(clean_path)[0]
+    # Cloudinary public IDs use forward slashes, even on Windows
+    public_id = base_name.replace('\\', '/')
+    
     try:
-        # Upload to Cloudinary
-        print(f"Uploading {clean_path}...")
-        response = cloudinary.uploader.upload(full_local_path)
+        # 3. UPLOAD WITH OVERWRITE=TRUE and the consistent public_id
+        # print(f"Uploading {public_id}...") # Uncomment if you want to see progress
+        response = cloudinary.uploader.upload(
+            full_local_path, 
+            public_id=public_id,
+            overwrite=True
+        )
         
-        # Return the secure URL (https link)
         return response['secure_url']
     except Exception as e:
         print(f"Error uploading {clean_path}: {e}")
@@ -120,7 +129,7 @@ def upload_to_mongodb(csv_file_path):
     
     # Limit rows for testing so you don't upload 1000 images while debugging!
     # Remove [:5] when ready for full run
-    for index, row in df.head(5).iterrows(): 
+    for index, row in df.iterrows(): 
         record = row.to_dict()
         
         # --- UPLOAD IMAGES AND SWAP PATHS FOR URLS ---
