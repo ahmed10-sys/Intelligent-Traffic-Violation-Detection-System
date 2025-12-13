@@ -56,7 +56,7 @@ import cloudinary.uploader
 import os
 
 # ---------------- CONFIGURATION ----------------
-MONGO_URI = 'mongodb://localhost:27017/'
+MONGO_URI = 'mongodb+srv://admin:traffic123@cluster0.hlm5gzg.mongodb.net/?appName=Cluster0'
 DB_NAME = 'traffic_violations_db'
 COLLECTION_NAME = 'violations'
 RESET_DB_BEFORE_RUN = True 
