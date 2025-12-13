@@ -12,6 +12,10 @@ from paddleocr import PaddleOCR
 BASE_DIR = "../output/cropped_photos"
 OUTPUT_CSV = "../output/master_violation_log.csv"
 
+# 🛠️ DEBUG TOGGLE: Save processed images named after detected text
+SAVE_DEBUG_IMAGES = False
+DEBUG_OUTPUT_DIR = "../output/debug_plates_check"
+
 # Disable Paddle Logging
 logging.getLogger("ppocr").setLevel(logging.ERROR)
 
@@ -68,10 +72,37 @@ def preprocess_for_rec(img):
     img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
     return img
 
+# ==========================================
+# 💾 DEBUG FUNCTION (New)
+# ==========================================
+def save_verification_image(img, text, v_id):
+    """
+    Saves the processed image with the detected text as the filename.
+    Format: [PlateNumber]_[VehicleID].jpg
+    """
+    if not SAVE_DEBUG_IMAGES or img is None:
+        return
+
+    if not os.path.exists(DEBUG_OUTPUT_DIR):
+        os.makedirs(DEBUG_OUTPUT_DIR)
+        print(f"📂 Created Debug Folder: {DEBUG_OUTPUT_DIR}")
+
+    # Clean text for filename (remove illegal chars)
+    safe_text = re.sub(r'[^\w\-]', '', text)
+    if not safe_text: safe_text = "Unknown"
+
+    filename = f"{safe_text}_{v_id}.jpg"
+    save_path = os.path.join(DEBUG_OUTPUT_DIR, filename)
+    
+    cv2.imwrite(save_path, img)
+
 def main():
     print(f"🚀 Starting Final Plate Reading (PaddleOCR)...")
     print(f"📂 Reading from: {BASE_DIR}")
     print(f"💾 Saving to: {OUTPUT_CSV}")
+
+    if SAVE_DEBUG_IMAGES:
+        print(f"📸 Debug Images will be saved to: {DEBUG_OUTPUT_DIR}")
 
     # Init Paddle (Stable Config)
     try:
@@ -133,6 +164,10 @@ def main():
                             plate_text = final_text
                             plate_conf = f"{current_conf:.2f}"
                             print(f"  ✅ ID {vehicle_id}: {plate_text} (Conf: {plate_conf})")
+                            
+                            # 📸 SAVE DEBUG IMAGE HERE
+                            save_verification_image(processed, plate_text, vehicle_id)
+                            
                             total_read += 1
                         else:
                             print(f"  ⚠️ ID {vehicle_id}: Read '{raw_text}' -> Filtered (Too short)")
@@ -151,6 +186,8 @@ def main():
     print("\n" + "="*50)
     print(f"🎉 MASTER CSV CREATED: {OUTPUT_CSV}")
     print(f"Total Plates Read: {total_read}")
+    if SAVE_DEBUG_IMAGES:
+        print(f"🖼️  Check '{DEBUG_OUTPUT_DIR}' to verify plate readings!")
     print("="*50)
 
 if __name__ == "__main__":

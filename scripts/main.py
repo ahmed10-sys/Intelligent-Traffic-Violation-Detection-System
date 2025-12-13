@@ -9,7 +9,7 @@ from datetime import datetime
 # ============================================
 
 # Toggle individual steps here (set to False to skip)
-ENABLE_OBJECT_DETECTION = True    # 1) object_detection.py
+ENABLE_OBJECT_DETECTION = False    # 1) object_detection.py
 ENABLE_CROPPING = True                # 2) detected_photos_crop.py
 ENABLE_BEST_SS = True               # 3) best_SS.py
 ENABLE_LICENSE_PLATE_DETECTOR = True   # 4) license_plate_detector.py

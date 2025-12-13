@@ -3,7 +3,7 @@ import os
 import pandas as pd
 
 # --- Paths ---
-VIDEO_PATH = "../input/bridge_back.mp4" # <-- CHANGED: Input video is now in '../input/'
+VIDEO_PATH = "../input/bridge_back.mp4" 
 CSV_PATH = "../output/vehicle_positions.csv"
 OUTPUT_DIR = "../output/cropped_photos"
 # --- Settings ---
