@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 import logging
+from datetime import datetime
 
 # ==========================================
 # 🗂️ CONFIGURATION
@@ -53,7 +54,8 @@ def main():
     if len(df_master) == 0:
         print("⚠️ No cars found in master log. Exiting consolidation.")
         # Create empty file so next scripts don't crash
-        pd.DataFrame(columns=['Vehicle_ID', 'Category', 'Plate_Number', 'Total_Fine_Amount']).to_csv(FINAL_OUTPUT_PATH, index=False)
+        cols = ['Vehicle_ID', 'Category', 'Plate_Number', 'Total_Fine_Amount', 'Issue_Date', 'Status']
+        pd.DataFrame(columns=cols).to_csv(FINAL_OUTPUT_PATH, index=False)
         return
 
     # Initialize Violation List for each row
@@ -110,8 +112,6 @@ def main():
     # ---------------------------------------------------------
     # 3. Merge Helmet Data (Skipped for Cars, but kept logic safe)
     # ---------------------------------------------------------
-    # Since we filtered df_master for 'Cars' only, this section won't match anything,
-    # effectively ignoring helmet violations (which is what you want for now).
     if os.path.exists(HELMET_LOG_PATH):
         print(f"ℹ️ Helmet data available but skipping merge (focusing on Cars only).")
 
@@ -121,6 +121,9 @@ def main():
     
     final_rows = []
     max_violations = 0
+    
+    # Get Current Date for the Issue_Date column
+    current_date = datetime.now().strftime("%Y-%m-%d")
     
     for _, row in df_master.iterrows():
         # Base info
@@ -157,7 +160,9 @@ def main():
             'Plate_Confidence': plate_conf,
             'Car_Image': car_image_path,
             'Plate_Image': plate_image_path,
-            'Total_Fine_Amount': total_fine
+            'Total_Fine_Amount': total_fine,
+            'Issue_Date': current_date,  # 📅 Set to current date
+            'Status': "Pending"          # 🟡 String status
         }
         
         for i, v in enumerate(unique_violations):
@@ -178,8 +183,8 @@ def main():
     
     if df_final.empty:
         print("\n⚠️ No violations found to consolidate.")
-        # Create empty csv with headers to prevent errors downstream
-        cols = ['Vehicle_ID', 'Category', 'Plate_Number', 'Plate_Confidence', 'Total_Fine_Amount', 'Car_Image', 'Plate_Image']
+        # Create empty csv with headers
+        cols = ['Vehicle_ID', 'Category', 'Plate_Number', 'Plate_Confidence', 'Total_Fine_Amount', 'Issue_Date', 'Status', 'Car_Image', 'Plate_Image']
         pd.DataFrame(columns=cols).to_csv(FINAL_OUTPUT_PATH, index=False)
         return
 
@@ -187,7 +192,7 @@ def main():
     max_violations = max(max_violations, 1)
     
     # Define column order
-    cols = ['Vehicle_ID', 'Category', 'Plate_Number', 'Plate_Confidence', 'Total_Fine_Amount', 'Car_Image', 'Plate_Image']
+    cols = ['Vehicle_ID', 'Category', 'Plate_Number', 'Plate_Confidence', 'Total_Fine_Amount', 'Issue_Date', 'Status', 'Car_Image', 'Plate_Image']
     for i in range(1, max_violations + 1):
         cols.append(f'Violation_{i}')
         cols.append(f'Violation_Fine_{i}')
