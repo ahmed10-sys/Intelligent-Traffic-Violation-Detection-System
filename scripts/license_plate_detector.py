@@ -1,14 +1,22 @@
 import os
+import sys
 import cv2
 import math
 import logging
 from ultralytics import YOLO
 
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ----------------------------------------------------------------------
 # 🗂️ CONFIGURATION
 # ----------------------------------------------------------------------
-BASE_DIR = "../output/cropped_photos"
-LPD_MODEL_PATH = "../models/yolov8s_lpd.pt" 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/cropped_photos"))
+LPD_MODEL_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../Models/plate_detector.pt"))
 
 CONFIDENCE_THRESHOLD = 0.40
 CENTER_TOLERANCE = 0.40      # 40% - Max distance from center allowed (0.0=center, 0.5=edge)

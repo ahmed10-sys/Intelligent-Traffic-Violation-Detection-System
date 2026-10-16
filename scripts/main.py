@@ -3,23 +3,30 @@ import sys
 import subprocess
 from datetime import datetime
 
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 # ============================================
 # CONFIGURATION FLAGS
 # ============================================
 
 # Toggle individual steps here (set to False to skip)
-ENABLE_OBJECT_DETECTION = False    # 1) object_detection.py
-ENABLE_CROPPING = True                # 2) detected_photos_crop.py
-ENABLE_BEST_SS = True               # 3) best_SS.py
+ENABLE_OBJECT_DETECTION = True     # 1) object_detection.py
+ENABLE_CROPPING = True             # 2) detected_photos_crop.py
+ENABLE_BEST_SS = True              # 3) best_SS.py
 ENABLE_LICENSE_PLATE_DETECTOR = True   # 4) license_plate_detector.py
-ENABLE_PLATE_READING = True            # 5) plate_reader.py
-ENABLE_SEATBELT_DETECTION = True         # 5) seatbelt_detection.py
-ENABLE_HELMET_DETECTION = True        # 6) helmet_detection.py
-ENABLE_RED_LIGHT = False               # 7) red_light.py
-ENABLE_VEHICLE_CLOSENESS = False      # 8) vehicle_closeness.py (distance)
-ENABLE_PHONE_DETECTION = False        # 9) phone_detection.py (image-based, interactive)
-ENABLE_CONSOLIDATION = True           # 10) consolidate_results.py
+ENABLE_PLATE_READING = True         # 5) plate_reader.py
+ENABLE_SEATBELT_DETECTION = True      # 6) seatbelt_detection.py
+ENABLE_HELMET_DETECTION = True     # 7) helmet_detection.py
+ENABLE_RED_LIGHT = False            # 8) red_light.py
+ENABLE_VEHICLE_CLOSENESS = False   # 9) vehicle_closeness.py (distance)
+ENABLE_PHONE_DETECTION = False     # 10) phone_detection.py (image-based, interactive)
+ENABLE_CONSOLIDATION = True        # 11) consolidate_results.py
+ENABLE_VISUALIZER = True           # 12) plate_visualizer.py
 
 
 # Known outputs (for quick reference / summary only)
@@ -207,6 +214,13 @@ def main() -> None:
         "Consolidate Results",
         "consolidate_results.py",
         enabled=ENABLE_CONSOLIDATION,
+    )
+
+    # 11) Launch Interactive Visualizer Dashboard
+    run_script(
+        "Interactive Visualizer Dashboard",
+        "plate_visualizer.py",
+        enabled=ENABLE_VISUALIZER,
     )
 
     end_time = datetime.now()

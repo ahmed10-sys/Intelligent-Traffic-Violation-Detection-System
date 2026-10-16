@@ -1,15 +1,22 @@
-from ultralytics import YOLO
-import cv2
+import sys
 import os
 import csv
+import cv2
+from ultralytics import YOLO
+
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # -------------------------
 # PATHS
 # -------------------------
-MODEL_PATH = "../models/helmet.pt"
-BASE_DIR = "../output/cropped_photos"
-OUTPUT_DIR = "../output/helmet_results"
-CSV_PATH = "../output/helmet_results.csv"
+MODEL_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../models/helmet.pt"))
+BASE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/cropped_photos"))
+OUTPUT_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/helmet_results"))
+CSV_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/helmet_results.csv"))
 
 CONF_THRES = 0.35  # confidence threshold
 
@@ -66,8 +73,10 @@ for id_folder in id_folders:
     helmet_detected_count = 0
     no_helmet_count = 0
     
-    for filename in os.listdir(folder_path):
+    for filename in sorted(os.listdir(folder_path)):
         if not filename.lower().endswith((".jpg", ".png", ".jpeg")):
+            continue
+        if "plate" in filename.lower():
             continue
 
         img_path = os.path.join(folder_path, filename)
@@ -85,21 +94,41 @@ for id_folder in id_folders:
         helmet_detected = False
         best_confidence = 0
 
+        img_h, img_w = img.shape[:2]
+        valid_detections = []
+        
         if detections is not None and len(detections) > 0:
-            # Process detections
             for box in detections:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
                 cls = int(box.cls[0])
-                label = model.names[cls]  # "with_helmet" or "without_helmet"
+                label = model.names[cls]
+                
+                det_center_y = (y1 + y2) / 2.0
+                det_center_x = (x1 + x2) / 2.0
+                
+                # 🚴 Upper-Half Focus: Helmets/heads must be within the upper 60% of the motorcycle crop
+                if det_center_y > (img_h * 0.60):
+                    continue  # Disregard lower-body, exhaust, wheels, or road marks
+                
+                # Filter out extreme edge bleeds from adjacent bikes
+                if det_center_x < (img_w * 0.04) or det_center_x > (img_w * 0.96):
+                    continue
+                    
+                valid_detections.append((box, x1, y1, x2, y2, conf, label))
+
+        if len(valid_detections) > 0:
+            # Process valid detections in head/torso region
+            for box, x1, y1, x2, y2, conf, label in valid_detections:
+                is_with_helmet = "with" in str(label).lower() and "without" not in str(label).lower()
                 
                 # Track best detection
                 if conf > best_confidence:
                     best_confidence = conf
-                    helmet_detected = (label == "with_helmet")
+                    helmet_detected = is_with_helmet
                 
                 # Draw annotations
-                color = (0, 255, 0) if label == "with_helmet" else (0, 0, 255)
+                color = (0, 255, 0) if is_with_helmet else (0, 0, 255)
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
                 cv2.putText(
                     annotated,
@@ -120,20 +149,17 @@ for id_folder in id_folders:
             else:
                 no_helmet_count += 1
                 total_violations += 1
-        else:
-            # No detection - assume no helmet (violation)
-            writer.writerow([vehicle_id, filename, "no_detection", 0, None, None, None, None])
-            no_helmet_count += 1
-            total_violations += 1
 
-        # Save annotated image if violation or for documentation
-        if not helmet_detected or helmet_detected_count == 0:  # Save if violation or first helmet
+            # Save annotated image whenever there are detections
             category_out_dir = os.path.join(OUTPUT_DIR, category)
             id_out_dir = os.path.join(category_out_dir, id_folder)
             os.makedirs(id_out_dir, exist_ok=True)
             
             out_path = os.path.join(id_out_dir, f"helmet_{filename}")
             cv2.imwrite(out_path, annotated)
+        else:
+            # No valid detection in head/torso region
+            writer.writerow([vehicle_id, filename, "no_detection", 0, None, None, None, None])
 
         images_processed += 1
         total_processed += 1

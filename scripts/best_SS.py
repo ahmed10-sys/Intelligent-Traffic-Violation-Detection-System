@@ -1,11 +1,19 @@
+import sys
 import cv2
 import os
 import numpy as np
 
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ----------------------------------------------------
 # SETTINGS
 # ----------------------------------------------------
-BASE_DIR = "../output/cropped_photos"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/cropped_photos"))
 DELETE_OTHERS = False   # set to True if you want to delete other images after selecting best
 
 # ----------------------------------------------------

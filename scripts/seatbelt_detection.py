@@ -1,17 +1,58 @@
-from ultralytics import YOLO
-import cv2
+import sys
 import os
 import csv
+import cv2
+import re
+import pandas as pd
+from ultralytics import YOLO
+
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # -------------------------
 # PATHS
 # -------------------------
-MODEL_PATH = "../models/seatbelt.pt"
-BASE_DIR = "../output/cropped_photos"
-OUTPUT_DIR = "../output/seatbelt_results"
-CSV_PATH = "../output/seatbelt_results.csv"
+MODEL_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../models/seatbelt.pt"))
+BASE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/cropped_photos"))
+OUTPUT_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/seatbelt_results"))
+CSV_PATH = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/seatbelt_results.csv"))
+POSITIONS_CSV = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/vehicle_positions.csv"))
+METADATA_CSV = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/crop_metadata.csv"))
 
 CONF_THRES = 0.35  # confidence threshold
+
+# -------------------------
+# LOAD MOTORCYCLE POSITIONS FOR CROSS-DETECTION FILTERING
+# -------------------------
+bike_positions_by_frame = {}
+if os.path.exists(POSITIONS_CSV):
+    try:
+        df_pos = pd.read_csv(POSITIONS_CSV)
+        # Class 4 is motorcycle
+        df_bikes = df_pos[df_pos["class"] == 4]
+        for _, row in df_bikes.iterrows():
+            f = int(row["frame"])
+            if f not in bike_positions_by_frame:
+                bike_positions_by_frame[f] = []
+            bike_positions_by_frame[f].append((int(row["x1"]), int(row["y1"]), int(row["x2"]), int(row["y2"]), int(row["id"])))
+        print(f" Loaded {len(df_bikes)} motorcycle records across {len(bike_positions_by_frame)} frames for cross-detection filtering.")
+    except Exception as e:
+        print(f" Warning: Could not load vehicle positions: {e}")
+
+# Load crop metadata if available
+crop_coords = {}
+if os.path.exists(METADATA_CSV):
+    try:
+        df_meta = pd.read_csv(METADATA_CSV)
+        for _, row in df_meta.iterrows():
+            key = (int(row["vehicle_id"]), str(row["filename"]))
+            crop_coords[key] = (int(row["crop_x1"]), int(row["crop_y1"]), int(row["crop_x2"]), int(row["crop_y2"]))
+        print(f" Loaded crop coordinates for {len(crop_coords)} images.")
+    except Exception as e:
+        print(f" Warning: Could not load crop metadata: {e}")
 
 # -------------------------
 # SETUP
@@ -71,6 +112,8 @@ for id_folder in id_folders:
     for filename in os.listdir(folder_path):
         if not filename.lower().endswith((".jpg", ".png", ".jpeg")):
             continue
+        if "plate" in filename.lower():
+            continue
 
         img_path = os.path.join(folder_path, filename)
         img = cv2.imread(img_path)
@@ -86,17 +129,56 @@ for id_folder in id_folders:
         annotated = img.copy()
         has_detections = False
 
-        # If no detections → write no_detection
-        if detections is None or len(detections) == 0:
-            writer.writerow([vehicle_id, filename, "no_detection", 0, None, None, None, None])
-        else:
-            # Process every detected box
+        # Extract frame index if available
+        frame_idx = None
+        match = re.search(r"frame(\d+)", filename)
+        if match:
+            frame_idx = int(match.group(1))
+
+        # Filter detections against outside motorcycle occlusion
+        valid_boxes = []
+        if detections is not None and len(detections) > 0:
             for box in detections:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
                 cls = int(box.cls[0])
                 label = model.names[cls]
 
+                # Check: Cross-Detection Masking / Occlusion Filtering
+                is_outside_rider = False
+                if frame_idx and frame_idx in bike_positions_by_frame:
+                    crop_key = (vehicle_id, filename)
+                    if crop_key in crop_coords:
+                        cx1, cy1, _, _ = crop_coords[crop_key]
+                        abs_x1 = cx1 + x1
+                        abs_y1 = cy1 + y1
+                        abs_x2 = cx1 + x2
+                        abs_y2 = cy1 + y2
+                        det_area = max(1, (abs_x2 - abs_x1) * (abs_y2 - abs_y1))
+
+                        for bx1, by1, bx2, by2, b_id in bike_positions_by_frame[frame_idx]:
+                            ix1 = max(abs_x1, bx1)
+                            iy1 = max(abs_y1, by1)
+                            ix2 = min(abs_x2, bx2)
+                            iy2 = min(abs_y2, by2)
+                            if ix2 > ix1 and iy2 > iy1:
+                                inter_area = (ix2 - ix1) * (iy2 - iy1)
+                                if (inter_area / det_area) > 0.25:
+                                    is_outside_rider = True
+                                    print(f"  🚫 Disregarded detection in {filename}: overlaps outside motorcycle ID {b_id}")
+                                    break
+
+                if is_outside_rider:
+                    continue
+
+                valid_boxes.append((box, x1, y1, x2, y2, conf, label))
+
+        # If no valid detections → write no_detection
+        if len(valid_boxes) == 0:
+            writer.writerow([vehicle_id, filename, "no_detection", 0, None, None, None, None])
+        else:
+            # Process every valid detected box
+            for box, x1, y1, x2, y2, conf, label in valid_boxes:
                 # Save CSV entry
                 writer.writerow([vehicle_id, filename, label, conf, x1, y1, x2, y2])
                 

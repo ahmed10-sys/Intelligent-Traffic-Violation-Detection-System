@@ -1,4 +1,5 @@
 import os
+import sys
 import cv2
 import csv
 import re
@@ -6,15 +7,23 @@ import logging
 import numpy as np
 from paddleocr import PaddleOCR
 
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ==========================================
 # 🗂️ CONFIGURATION
 # ==========================================
-BASE_DIR = "../output/cropped_photos"
-OUTPUT_CSV = "../output/master_violation_log.csv"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/cropped_photos"))
+OUTPUT_CSV = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/master_violation_log.csv"))
+os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
 
 # 🛠️ DEBUG TOGGLE: Save processed images named after detected text
 SAVE_DEBUG_IMAGES = False
-DEBUG_OUTPUT_DIR = "../output/debug_plates_check"
+DEBUG_OUTPUT_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output/debug_plates_check"))
 
 # Disable Paddle Logging
 logging.getLogger("ppocr").setLevel(logging.ERROR)
@@ -61,11 +70,42 @@ def apply_pakistan_correction(text):
     return final_text.replace('-', '')
 
 # ==========================================
-# 🖼️ PREPROCESSING
+# 🖼️ PREPROCESSING & EMBLEM REMOVAL
 # ==========================================
+def remove_red_emblem(img):
+    """
+    Automatically detects and inpaints the red/maroon provincial emblem 
+    located in the top-left section of Pakistani plates (e.g. motorcycles, rickshaws).
+    """
+    if img is None:
+        return None
+    h, w = img.shape[:2]
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    
+    # Red hue spans 0-18 and 160-180 in OpenCV HSV
+    lower_red1 = np.array([0, 35, 35])
+    upper_red1 = np.array([18, 255, 255])
+    lower_red2 = np.array([160, 35, 35])
+    upper_red2 = np.array([180, 255, 255])
+    
+    mask = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
+    # The emblem is strictly in top-left (left 35% width, top 55% height)
+    mask[:, int(w * 0.35):] = 0
+    mask[int(h * 0.55):, :] = 0
+    
+    # Paint over red pixels with the plate background color
+    if np.any(mask):
+        bg_color = [int(x) for x in np.median(img[int(h * 0.6):, :], axis=(0, 1))]
+        cleaned = img.copy()
+        cleaned[mask > 0] = bg_color
+        return cleaned
+    return img
+
 def preprocess_for_rec(img):
     if img is None: return None
-    # 2x upscale for clarity
+    # 1. Strip red emblem artifact so it doesn't get read as a letter
+    img = remove_red_emblem(img)
+    # 2. 2x upscale for clarity
     scale = 200 
     w = int(img.shape[1] * scale / 100)
     h = int(img.shape[0] * scale / 100)
@@ -188,6 +228,7 @@ def main():
     print(f"Total Plates Read: {total_read}")
     if SAVE_DEBUG_IMAGES:
         print(f"🖼️  Check '{DEBUG_OUTPUT_DIR}' to verify plate readings!")
+    print("🌐 View visual plate & violation dashboard: python scripts/plate_visualizer.py")
     print("="*50)
 
 if __name__ == "__main__":

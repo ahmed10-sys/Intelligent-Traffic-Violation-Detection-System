@@ -1,15 +1,27 @@
 import cv2
 import os
+import sys
 import pandas as pd
 
-# --- Paths ---
-VIDEO_PATH = "../input/bridge_back.mp4" 
-CSV_PATH = "../output/vehicle_positions.csv"
-OUTPUT_DIR = "../output/cropped_photos"
-# --- Settings ---
-roi_top = 876
-roi_bottom = 1824
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, ".."))
+
+# --- Paths ---
+VIDEO_PATH = os.environ.get("VIDEO_PATH", os.path.join(PROJECT_ROOT, "input", "test2.mp4"))
+CSV_PATH = os.path.join(PROJECT_ROOT, "output", "vehicle_positions.csv")
+OUTPUT_DIR = os.path.join(PROJECT_ROOT, "output", "cropped_photos")
+# --- Setup ---
+df = pd.read_csv(CSV_PATH)
+cap = cv2.VideoCapture(VIDEO_PATH)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# --- Settings ---
 max_per_id = 10      # total max crops per vehicle
 zones_per_id = 3     # number of vertical ROI zones
 max_per_zone = 3     # max crops allowed in EACH zone
@@ -19,31 +31,52 @@ padding_x_front = 400   # More padding in front direction
 padding_x_back = 200    # Less padding in back direction  
 padding_y = 450
 
-# Vehicle class mapping (from YOLO)
-BIKE_CLASSES = [1, 3]  # 1: bicycle, 3: motorcycle
-CAR_CLASSES = [2, 5, 7]  # 2: car, 5: bus, 7: truck (all merged together)
+# Dynamic ROI detection from CSV (where in_roi == 1)
+roi_rows = df[df["in_roi"] == 1]
+if not roi_rows.empty:
+    roi_top = int(roi_rows["center_y"].min())
+    roi_bottom = int(roi_rows["center_y"].max())
+else:
+    roi_top = 0
+    roi_bottom = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) if cap.isOpened() else 2160
 
-# --- Setup ---
-df = pd.read_csv(CSV_PATH)
-cap = cv2.VideoCapture(VIDEO_PATH)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Vehicle class mapping (New scheme: 0=person, 1=car, 2=bus, 3=truck, 4=motorcycle, 5=rickshaw)
+BIKE_CLASSES = [4]         # 4: motorcycle
+RICKSHAW_CLASSES = [5]     # 5: rickshaw
+CAR_CLASSES = [1, 2, 3]    # 1: car, 2: bus, 3: truck
+
+CLASS_NAMES = {
+    0: "person",
+    1: "car",
+    2: "bus",
+    3: "truck",
+    4: "motorcycle",
+    5: "rickshaw"
+}
 
 # Create main category folders
 BIKE_DIR = os.path.join(OUTPUT_DIR, "Bikes_Motorcycles")
-CAR_DIR = os.path.join(OUTPUT_DIR, "Cars")  # Now includes all non-bike vehicles
+RICKSHAW_DIR = os.path.join(OUTPUT_DIR, "Rickshaws")
+CAR_DIR = os.path.join(OUTPUT_DIR, "Cars")
+UNKNOWN_DIR = os.path.join(OUTPUT_DIR, "Unknown")
 os.makedirs(BIKE_DIR, exist_ok=True)
+os.makedirs(RICKSHAW_DIR, exist_ok=True)
 os.makedirs(CAR_DIR, exist_ok=True)
+os.makedirs(UNKNOWN_DIR, exist_ok=True)
 
 saved_counts = {}       # overall count per ID
 zone_counts = {}        # COUNT PER ZONE per ID
 frame_idx = 0
 last_box = {}           # key: track_id → last (x1,y1,x2,y2)
 vehicle_directions = {} # Track vehicle movement direction
+crop_metadata_records = []  # Metadata mapping crops to full-frame coordinates
 
 print("Starting video cropping...")
+print(f"ROI automatically inferred from CSV: Y={roi_top} to Y={roi_bottom}")
 print(f"Vehicle Categories:")
 print(f"  🚴 Bikes/Motorcycles: Classes {BIKE_CLASSES}")
-print(f"  🚗 Cars & Other Vehicles: Classes {CAR_CLASSES}")
+print(f"  🛺 Rickshaws: Classes {RICKSHAW_CLASSES}")
+print(f"  🚗 Cars & Heavy Vehicles: Classes {CAR_CLASSES}")
 print(f"  📐 Front-focused padding: {padding_x_front}px front, {padding_x_back}px back")
 
 # ---------------------------------------------------------
@@ -69,8 +102,12 @@ def sanitize_bbox(x1, y1, x2, y2, w, h):
 def get_vehicle_category(class_id):
     if class_id in BIKE_CLASSES:
         return "bike"
+    elif class_id in RICKSHAW_CLASSES:
+        return "rickshaw"
+    elif class_id in CAR_CLASSES:
+        return "car"
     else:
-        return "car"  # Everything else goes to Cars folder
+        return "unknown"
 
 # ---------------------------------------------------------
 # Get output directory for vehicle category
@@ -78,13 +115,17 @@ def get_vehicle_category(class_id):
 def get_category_dir(category):
     if category == "bike":
         return BIKE_DIR
-    else:
+    elif category == "rickshaw":
+        return RICKSHAW_DIR
+    elif category == "car":
         return CAR_DIR
+    else:
+        return UNKNOWN_DIR
 
 # ---------------------------------------------------------
 # Determine vehicle direction and apply smart padding
 # ---------------------------------------------------------
-def get_smart_padding(x1, y1, x2, y2, track_id, w, h):
+def get_smart_padding(x1, y1, x2, y2, track_id, w, h, category="car", other_boxes=None):
     center_x = (x1 + x2) // 2
     
     # Track vehicle direction
@@ -103,23 +144,51 @@ def get_smart_padding(x1, y1, x2, y2, track_id, w, h):
         elif movement < -10:  # Moving left → front is on left
             front_direction = "left"
         else:  # Not moving much, use default
-            front_direction = "right"  # Default assumption
+            front_direction = "right"
     else:
-        front_direction = "right"  # Default assumption
+        front_direction = "right"
     
-    # Apply asymmetric padding based on front direction
-    if front_direction == "right":
-        # More padding on right (front), less on left (back)
-        x1p = max(0, x1 - padding_x_back)
-        x2p = min(w, x2 + padding_x_front)
-    else:  # front_direction == "left"
-        # More padding on left (front), less on right (back)
-        x1p = max(0, x1 - padding_x_front)
-        x2p = min(w, x2 + padding_x_back)
-    
-    # Symmetric Y padding
-    y1p = max(0, y1 - padding_y)
-    y2p = min(h, y2 + padding_y)
+    if category == "bike":
+        # 🚴 Adaptive Tight Cropping for Motorcycles:
+        # Clamp horizontal padding to minimal margins (10-25px) to prevent bleed from neighboring bikes
+        box_w = x2 - x1
+        box_h = y2 - y1
+        pad_x = min(25, max(10, int(box_w * 0.10)))
+        x1p = max(0, x1 - pad_x)
+        x2p = min(w, x2 + pad_x)
+        
+        # Vertical padding: upper focus (head region needs slight headroom, bottom road needs zero padding)
+        pad_y_top = min(35, max(15, int(box_h * 0.15)))
+        pad_y_bottom = min(15, max(5, int(box_h * 0.05)))
+        y1p = max(0, y1 - pad_y_top)
+        y2p = min(h, y2 + pad_y_bottom)
+    else:
+        # 🚗 Cars, Rickshaws & Heavy Vehicles
+        # Apply asymmetric padding based on front direction
+        if front_direction == "right":
+            x1p = max(0, x1 - padding_x_back)
+            x2p = min(w, x2 + padding_x_front)
+        else:
+            x1p = max(0, x1 - padding_x_front)
+            x2p = min(w, x2 + padding_x_back)
+        
+        y1p = max(0, y1 - padding_y)
+        y2p = min(h, y2 + padding_y)
+        
+        # 🛡️ Cross-Detection Masking / Occlusion Padding Clamping:
+        # If an adjacent motorcycle/rickshaw is in the same frame, clamp car padding so it does NOT envelop them!
+        if other_boxes:
+            for ob in other_boxes:
+                ox1, oy1, ox2, oy2, ocls = ob
+                if ocls in [4, 5]:  # Motorcycle (4) or Rickshaw (5)
+                    # Check vertical overlap
+                    if max(y1p, oy1) < min(y2p, oy2):
+                        # If motorcycle is to the right of car, clamp right padding
+                        if ox1 >= x2 and x2p > ox1:
+                            x2p = max(x2, ox1 - 5)
+                        # If motorcycle is to the left of car, clamp left padding
+                        if ox2 <= x1 and x1p < ox2:
+                            x1p = min(x1, ox2 + 5)
     
     return x1p, y1p, x2p, y2p, front_direction
 
@@ -137,8 +206,8 @@ def get_clean_filename(frame_idx, zone_index, vehicle_type, front_direction):
 # ---------------------------------------------------------
 # Compute zone boundaries
 # ---------------------------------------------------------
-roi_height = roi_bottom - roi_top
-zone_size = roi_height // zones_per_id    # size of each zone
+roi_height = max(1, roi_bottom - roi_top)
+zone_size = max(1, roi_height // zones_per_id)    # size of each zone
 
 print(f"ROI: {roi_top}-{roi_bottom} (height: {roi_height})")
 print(f"Zone size: {zone_size} pixels")
@@ -214,11 +283,22 @@ while True:
         if zone_counts[track_id][zone_index] >= max_per_zone:
             continue
 
-        if saved_counts.get(track_id, 0) >= max_per_id:
-            continue
+        # --- Other vehicles in frame for cross-detection masking ---
+        other_boxes = []
+        for _, other_row in frame_data.iterrows():
+            if int(other_row["id"]) != track_id:
+                other_boxes.append((
+                    int(other_row["x1"]),
+                    int(other_row["y1"]),
+                    int(other_row["x2"]),
+                    int(other_row["y2"]),
+                    int(other_row["class"])
+                ))
 
-        # --- Apply SMART PADDING (Front-focused) ---
-        x1p, y1p, x2p, y2p, front_direction = get_smart_padding(x1, y1, x2, y2, track_id, w, h)
+        # --- Apply SMART PADDING (Front-focused + Adaptive Tight Crop + Clamping) ---
+        x1p, y1p, x2p, y2p, front_direction = get_smart_padding(
+            x1, y1, x2, y2, track_id, w, h, category=vehicle_category, other_boxes=other_boxes
+        )
 
         # Ensure padded box is valid
         if x2p <= x1p or y2p <= y1p:
@@ -236,18 +316,7 @@ while True:
         os.makedirs(id_dir, exist_ok=True)
 
         # Get vehicle type name for filename
-        if class_id == 1:
-            vehicle_type = "bicycle"
-        elif class_id == 2:
-            vehicle_type = "car"
-        elif class_id == 3:
-            vehicle_type = "motorcycle"
-        elif class_id == 5:
-            vehicle_type = "bus"
-        elif class_id == 7:
-            vehicle_type = "truck"
-        else:
-            vehicle_type = "unknown"
+        vehicle_type = CLASS_NAMES.get(class_id, "unknown")
 
         # Use clean filename without special characters
         clean_filename = get_clean_filename(frame_idx, zone_index, vehicle_type, front_direction)
@@ -259,6 +328,16 @@ while True:
             # --- Update counters ---
             saved_counts[track_id] = saved_counts.get(track_id, 0) + 1
             zone_counts[track_id][zone_index] += 1
+            
+            crop_metadata_records.append({
+                "vehicle_id": track_id,
+                "filename": clean_filename,
+                "frame_idx": frame_idx,
+                "class_id": class_id,
+                "category": vehicle_category,
+                "orig_x1": x1, "orig_y1": y1, "orig_x2": x2, "orig_y2": y2,
+                "crop_x1": x1p, "crop_y1": y1p, "crop_x2": x2p, "crop_y2": y2p
+            })
             
             print(f"✅ Saved: {vehicle_category.upper()} ID {track_id}, Frame {frame_idx}, Zone {zone_index}, "
                   f"Dir: {front_direction}, Total: {saved_counts[track_id]}/{max_per_id}")
@@ -272,10 +351,12 @@ while True:
         
         # Count by category
         bike_count = sum(1 for tid in saved_counts if get_vehicle_category(df[df["id"] == tid]["class"].iloc[0]) == "bike")
-        car_count = unique_vehicles - bike_count
+        rickshaw_count = sum(1 for tid in saved_counts if get_vehicle_category(df[df["id"] == tid]["class"].iloc[0]) == "rickshaw")
+        car_count = sum(1 for tid in saved_counts if get_vehicle_category(df[df["id"] == tid]["class"].iloc[0]) == "car")
+        unknown_count = unique_vehicles - (bike_count + rickshaw_count + car_count)
         
         print(f"📊 Frame {frame_idx}: {total_saved} crops for {unique_vehicles} vehicles "
-              f"(🚴: {bike_count}, 🚗: {car_count})")
+              f"(🚴: {bike_count}, 🛺: {rickshaw_count}, 🚗: {car_count}, ❓: {unknown_count})")
 
     # Exit on ESC
     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -290,20 +371,14 @@ total_crops = sum(saved_counts.values())
 total_vehicles = len(saved_counts)
 
 # Count vehicles by category
-bike_vehicles = []
-car_vehicles = []
+category_vehicles = {"bike": [], "rickshaw": [], "car": [], "unknown": []}
 
 for track_id in saved_counts.keys():
     class_id = df[df["id"] == track_id]["class"].iloc[0]
     category = get_vehicle_category(class_id)
-    
-    if category == "bike":
-        bike_vehicles.append(track_id)
-    else:
-        car_vehicles.append(track_id)
+    category_vehicles.setdefault(category, []).append(track_id)
 
-bike_crops = sum(saved_counts[tid] for tid in bike_vehicles)
-car_crops = sum(saved_counts[tid] for tid in car_vehicles)
+category_crops = {cat: sum(saved_counts[tid] for tid in tids) for cat, tids in category_vehicles.items()}
 
 print(f"Total frames processed: {frame_idx}")
 print(f"Total vehicles detected: {total_vehicles}")
@@ -311,36 +386,30 @@ print(f"Total crops saved: {total_crops}")
 print(f"Output directory: {OUTPUT_DIR}")
 
 print(f"\n📁 Category Breakdown:")
-print(f"  🚴 Bikes/Motorcycles: {len(bike_vehicles)} vehicles, {bike_crops} crops")
-print(f"  🚗 Cars & Other Vehicles: {len(car_vehicles)} vehicles, {car_crops} crops")
+print(f"  🚴 Bikes/Motorcycles: {len(category_vehicles['bike'])} vehicles, {category_crops['bike']} crops")
+print(f"  🛺 Rickshaws: {len(category_vehicles['rickshaw'])} vehicles, {category_crops['rickshaw']} crops")
+print(f"  🚗 Cars & Heavy Vehicles: {len(category_vehicles['car'])} vehicles, {category_crops['car']} crops")
+if category_vehicles["unknown"]:
+    print(f"  ❓ Unknown: {len(category_vehicles['unknown'])} vehicles, {category_crops['unknown']} crops")
 
 # Show per-vehicle statistics by category
-if bike_vehicles:
-    print(f"\n📋 Bikes/Motorcycles breakdown:")
-    for track_id in sorted(bike_vehicles):
-        count = saved_counts[track_id]
-        class_id = df[df["id"] == track_id]["class"].iloc[0]
-        vehicle_type = "bicycle" if class_id == 1 else "motorcycle"
-        zones = zone_counts[track_id]
-        zone_str = ", ".join([f"Zone{z}:{c}" for z, c in zones.items()])
-        print(f"  ID {track_id:03d} ({vehicle_type}): {count} crops [{zone_str}]")
+for cat_name, label in [("bike", "Bikes/Motorcycles"), ("rickshaw", "Rickshaws"), ("car", "Cars & Heavy Vehicles"), ("unknown", "Unknown")]:
+    v_list = category_vehicles.get(cat_name, [])
+    if v_list:
+        print(f"\n📋 {label} breakdown:")
+        for track_id in sorted(v_list):
+            count = saved_counts[track_id]
+            class_id = df[df["id"] == track_id]["class"].iloc[0]
+            v_type = CLASS_NAMES.get(class_id, f"class_{class_id}")
+            zones = zone_counts[track_id]
+            zone_str = ", ".join([f"Zone{z}:{c}" for z, c in zones.items()])
+            print(f"  ID {track_id:03d} ({v_type}): {count} crops [{zone_str}]")
 
-if car_vehicles:
-    print(f"\n📋 Cars & Other Vehicles breakdown:")
-    for track_id in sorted(car_vehicles):
-        count = saved_counts[track_id]
-        class_id = df[df["id"] == track_id]["class"].iloc[0]
-        if class_id == 2:
-            vehicle_type = "car"
-        elif class_id == 5:
-            vehicle_type = "bus"
-        elif class_id == 7:
-            vehicle_type = "truck"
-        else:
-            vehicle_type = "unknown"
-        zones = zone_counts[track_id]
-        zone_str = ", ".join([f"Zone{z}:{c}" for z, c in zones.items()])
-        print(f"  ID {track_id:03d} ({vehicle_type}): {count} crops [{zone_str}]")
+# Save crop metadata for downstream occlusion filtering
+if crop_metadata_records:
+    metadata_path = os.path.normpath(os.path.join(OUTPUT_DIR, "..", "crop_metadata.csv"))
+    pd.DataFrame(crop_metadata_records).to_csv(metadata_path, index=False)
+    print(f"💾 Crop metadata saved to: {metadata_path}")
 
 cap.release()
 cv2.destroyAllWindows()

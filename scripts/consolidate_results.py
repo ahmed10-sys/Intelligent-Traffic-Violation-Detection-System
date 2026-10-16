@@ -1,12 +1,19 @@
+import sys
 import pandas as pd
 import os
 import logging
 from datetime import datetime
 
+# Fix Windows console encoding for Unicode/emojis
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ==========================================
 # 🗂️ CONFIGURATION
 # ==========================================
-OUTPUT_DIR = "../output"
+OUTPUT_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "../output"))
 MASTER_LOG_PATH = os.path.join(OUTPUT_DIR, "master_violation_log.csv")
 SEATBELT_LOG_PATH = os.path.join(OUTPUT_DIR, "seatbelt_results.csv")
 HELMET_LOG_PATH = os.path.join(OUTPUT_DIR, "helmet_results.csv")
@@ -44,25 +51,11 @@ def main():
 
     df_master['join_id'] = df_master['Vehicle_ID'].apply(normalize_id)
     
-    # ---------------------------------------------------------
-    # 🛑 FILTER: CARS ONLY
-    # ---------------------------------------------------------
-    # We explicitly remove Bikes/Motorcycles because plate detection isn't ready for them yet.
-    df_master = df_master[df_master['Category'] == 'Cars']
-    print(f"✅ Filtered for CARS ONLY: {len(df_master)} records remaining")
-    
-    if len(df_master) == 0:
-        print("⚠️ No cars found in master log. Exiting consolidation.")
-        # Create empty file so next scripts don't crash
-        cols = ['Vehicle_ID', 'Category', 'Plate_Number', 'Total_Fine_Amount', 'Issue_Date', 'Status']
-        pd.DataFrame(columns=cols).to_csv(FINAL_OUTPUT_PATH, index=False)
-        return
-
     # Initialize Violation List for each row
     df_master['Violations_Data'] = [[] for _ in range(len(df_master))]
 
     # ---------------------------------------------------------
-    # 2. Merge Seatbelt Data
+    # 2. Merge Seatbelt Data (Cars)
     # ---------------------------------------------------------
     if os.path.exists(SEATBELT_LOG_PATH):
         try:
@@ -70,50 +63,94 @@ def main():
             df_seatbelt['vehicle_id'] = df_seatbelt['vehicle_id'].astype(str)
             df_seatbelt['join_id'] = df_seatbelt['vehicle_id'].apply(normalize_id)
             
-            # Filter for violations
-            seatbelt_violations = df_seatbelt[df_seatbelt['label'].astype(str).str.lower().str.contains('no') & 
-                                              df_seatbelt['label'].astype(str).str.lower().str.contains('seatbelt')]
-            
             seatbelt_map = {}
-            for _, row in seatbelt_violations.iterrows():
-                jid = row['join_id']
-                img_name = f"detected_{row['image_name']}"
-                
-                if jid not in seatbelt_map:
-                    seatbelt_map[jid] = []
-                seatbelt_map[jid].append({
-                    'violation': 'No Seatbelt',
-                    'fine': FINE_AMOUNTS.get('No Seatbelt', 1000),
-                    'image_name': img_name,
-                    'type': 'seatbelt'
-                })
+            for jid, group in df_seatbelt.groupby('join_id'):
+                # Look for explicit no-seatbelt detections
+                nosb_rows = group[group['label'].astype(str).str.lower().str.contains('no') & 
+                                  group['label'].astype(str).str.lower().str.contains('seatbelt')]
+                if not nosb_rows.empty:
+                    # Pick highest confidence violation frame as primary evidence
+                    best_nosb = nosb_rows.sort_values('confidence', ascending=False).iloc[0]
+                    img_name = f"detected_{best_nosb['image_name']}"
+                    seatbelt_map[jid] = [{
+                        'violation': 'No Seatbelt',
+                        'fine': FINE_AMOUNTS.get('No Seatbelt', 5000),
+                        'image_name': img_name,
+                        'type': 'seatbelt'
+                    }]
             
             # Apply to master
             for index, row in df_master.iterrows():
                 jid = row['join_id']
-                if jid in seatbelt_map:
+                if jid in seatbelt_map and row['Category'] == 'Cars':
                     orig_id = row['Vehicle_ID']
-                    category = row['Category']
-                    
                     for item in seatbelt_map[jid]:
-                        # Seatbelt script only runs on Cars anyway, but safe to check
-                        if category == 'Cars':
-                            img_path = os.path.join(OUTPUT_DIR, "seatbelt_results", "Cars", orig_id, item['image_name'])
-                            df_master.at[index, 'Violations_Data'].append({
-                                'violation': 'No Seatbelt',
-                                'fine': item['fine'],
-                                'image_path': img_path
-                            })
+                        img_path = os.path.join(OUTPUT_DIR, "seatbelt_results", "Cars", orig_id, item['image_name'])
+                        df_master.at[index, 'Violations_Data'].append({
+                            'violation': 'No Seatbelt',
+                            'fine': item['fine'],
+                            'image_path': img_path
+                        })
                             
-            print(f"✅ Merged Seatbelt Data")
+            print(f"✅ Merged Seatbelt Data (Highest-Confidence Evidence Selection)")
         except Exception as e:
             print(f"⚠️ Error merging seatbelt data: {e}")
 
     # ---------------------------------------------------------
-    # 3. Merge Helmet Data (Skipped for Cars, but kept logic safe)
+    # 3. Merge Helmet Data (Bikes_Motorcycles)
     # ---------------------------------------------------------
     if os.path.exists(HELMET_LOG_PATH):
-        print(f"ℹ️ Helmet data available but skipping merge (focusing on Cars only).")
+        try:
+            df_helmet = pd.read_csv(HELMET_LOG_PATH)
+            df_helmet['vehicle_id'] = df_helmet['vehicle_id'].astype(str)
+            df_helmet['join_id'] = df_helmet['vehicle_id'].apply(normalize_id)
+            
+            helmet_map = {}
+            for jid, group in df_helmet.groupby('join_id'):
+                with_helmet_rows = group[(group['helmet_status'] == 'with_helmet') & (group['confidence'] >= 0.35)]
+                without_helmet_rows = group[(group['helmet_status'] == 'without_helmet') & (group['confidence'] >= 0.35)]
+                
+                # CONSENSUS RULE:
+                # If rider was clearly seen with helmet in ANY good frame, they are COMPLIANT!
+                if not with_helmet_rows.empty:
+                    continue
+                
+                # Genuine violation: Explicit without_helmet detected and NO with_helmet anywhere!
+                if not without_helmet_rows.empty:
+                    best_without = without_helmet_rows.sort_values('confidence', ascending=False).iloc[0]
+                    img_name = f"helmet_{best_without['image_name']}"
+                    helmet_map[jid] = [{
+                        'violation': 'No Helmet',
+                        'fine': FINE_AMOUNTS.get('No Helmet', 2000),
+                        'image_name': img_name,
+                        'type': 'helmet'
+                    }]
+                else:
+                    # All frames had no_detection (head never seen). Pick best available close-up frame.
+                    zone2_or_best = group[group['image_name'].str.contains('BEST|zone2')]
+                    fallback = zone2_or_best.iloc[0] if not zone2_or_best.empty else group.sort_values('image_name', ascending=False).iloc[0]
+                    img_name = f"helmet_{fallback['image_name']}"
+                    helmet_map[jid] = [{
+                        'violation': 'No Helmet',
+                        'fine': FINE_AMOUNTS.get('No Helmet', 2000),
+                        'image_name': img_name,
+                        'type': 'helmet'
+                    }]
+            
+            for index, row in df_master.iterrows():
+                jid = row['join_id']
+                if jid in helmet_map and row['Category'] == 'Bikes_Motorcycles':
+                    orig_id = row['Vehicle_ID']
+                    for item in helmet_map[jid]:
+                        img_path = os.path.join(OUTPUT_DIR, "helmet_results", "Bikes_Motorcycles", orig_id, item['image_name'])
+                        df_master.at[index, 'Violations_Data'].append({
+                            'violation': 'No Helmet',
+                            'fine': item['fine'],
+                            'image_path': img_path
+                        })
+            print(f"✅ Merged Helmet Data (Consensus & Evidence Selection)")
+        except Exception as e:
+            print(f"⚠️ Error merging helmet data: {e}")
 
     # ---------------------------------------------------------
     # 4. Construct Final Columns
@@ -133,8 +170,14 @@ def main():
         plate_conf = row['Plate_Confidence']
         
         # Images
-        car_image_path = os.path.join(OUTPUT_DIR, "cropped_photos", category, vehicle_id, "BEST.jpg")
-        plate_image_path = os.path.join(OUTPUT_DIR, "cropped_photos", category, vehicle_id, "BEST_PLATE_CROP.jpg")
+        car_dir = os.path.join(OUTPUT_DIR, "cropped_photos", category, vehicle_id)
+        car_image_path = os.path.join(car_dir, "BEST.jpg")
+        if not os.path.exists(car_image_path) and os.path.isdir(car_dir):
+            cands = [f for f in os.listdir(car_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "plate" not in f.lower()]
+            if cands:
+                cands.sort()
+                car_image_path = os.path.join(car_dir, cands[-1])
+        plate_image_path = os.path.join(car_dir, "BEST_PLATE_CROP.jpg")
         
         # Violations (Raw list)
         violations = row['Violations_Data']

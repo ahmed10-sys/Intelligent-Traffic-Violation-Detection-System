@@ -5,18 +5,24 @@ import os
 import numpy as np
 import time
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, ".."))
+
 # ========== CONFIGURATION ==========
-MODEL_PATH = "../models/yolov8m.pt"
-VIDEO_PATH = "../input/bridge_back.mp4"
-CSV_PATH = "../output/vehicle_positions.csv"
-OUTPUT_VIDEO = "../output/object_detection_roi_output.mp4"
+MODEL_PATH = os.path.join(PROJECT_ROOT, "Models", "object_detection.pt")
+VIDEO_PATH = os.environ.get("VIDEO_PATH", os.path.join(PROJECT_ROOT, "input", "test2.mp4"))
+CSV_PATH = os.path.join(PROJECT_ROOT, "output", "vehicle_positions.csv")
+OUTPUT_VIDEO = os.path.join(PROJECT_ROOT, "output", "object_detection_roi_output.mp4")
 
 # ROI (will be set automatically)
 ROI_TOP = None
 ROI_BOTTOM = None
 
-# VEHICLE CLASSES: bicycle, car, motorcycle, bus, truck (IDs depend on your model)
-VEHICLE_CLASSES = [1, 2, 3, 5, 7]
+# VEHICLE CLASSES (fine-tuned model, custom indices):
+#   1=car  2=bus  3=truck  4=motorcycle  5=rickshaw
+# Class 0 (person) is intentionally excluded — model retains it for training
+# stability but we do not track persons as vehicles.
+VEHICLE_CLASSES = [1, 2, 3, 4, 5]
 
 # SPEED OPTIMIZATIONS AND FLAGS
 SPEED_OPTIMIZATIONS = {
@@ -24,13 +30,13 @@ SPEED_OPTIMIZATIONS = {
     "resize_ratio": 0.4,           # Resize frames to 40% for detection speed (set to 1.0 to disable)
     "disable_csv_logging": False,  # If True, CSV logging is disabled
     "disable_video_output": False, # If True, won't write an output video
-    "disable_display": False,      # If True, won't show preview window
+    "disable_display": True,       # If True, won't show preview window
     "roi_only_detection": False,   # If True, perform detection on ROI crop only
     "csv_flush_interval": 50       # Flush CSV every N processed frames
 }
 
 CONF_THRESHOLD = 0.2  # detection confidence threshold
-TRACKER_CONFIG = "bytetrack.yaml"  # tracker config for model.track (leave if works in your env)
+TRACKER_CONFIG = "botsort.yaml"  # tracker config for model.track (leave if works in your env)
 
 # ========== UTILITIES ==========
 
@@ -120,13 +126,19 @@ def run_detection_with_roi():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
 
-    # ROI selection (interactive). If user cancels, fallback to full frame.
-    selected_top, selected_bottom = select_roi(VIDEO_PATH)
-    if selected_top is None or selected_bottom is None:
+    # ROI selection
+    if ROI_TOP is not None and ROI_BOTTOM is not None:
+        print(f"ℹ️ Using predefined ROI: top={ROI_TOP}, bottom={ROI_BOTTOM}")
+    elif SPEED_OPTIMIZATIONS.get("disable_display", False) or os.environ.get("HEADLESS") == "1":
         ROI_TOP, ROI_BOTTOM = 0, height
-        print(f"ℹ️ Using full frame as ROI: top={ROI_TOP}, bottom={ROI_BOTTOM}")
+        print(f"ℹ️ Automated execution: Using full frame as ROI: top={ROI_TOP}, bottom={ROI_BOTTOM}")
     else:
-        ROI_TOP, ROI_BOTTOM = max(0, selected_top), min(height, selected_bottom)
+        selected_top, selected_bottom = select_roi(VIDEO_PATH)
+        if selected_top is None or selected_bottom is None:
+            ROI_TOP, ROI_BOTTOM = 0, height
+            print(f"ℹ️ Using full frame as ROI: top={ROI_TOP}, bottom={ROI_BOTTOM}")
+        else:
+            ROI_TOP, ROI_BOTTOM = max(0, selected_top), min(height, selected_bottom)
 
     # Prepare video writer if needed
     out = None
@@ -170,7 +182,7 @@ def run_detection_with_roi():
     processed_frames = 0
     total_detections = 0
     roi_detections = 0
-    bike_detections = 0
+    motorcycle_detections = 0
     car_detections = 0
 
     try:
@@ -235,7 +247,7 @@ def run_detection_with_roi():
             # Per-frame counters
             frame_detections = 0
             frame_roi_detections = 0
-            frame_bike_detections = 0
+            frame_motorcycle_detections = 0
             frame_car_detections = 0
 
             if results and results[0].boxes is not None and len(results[0].boxes) > 0:
@@ -280,11 +292,11 @@ def run_detection_with_roi():
                         frame_roi_detections += 1
                         roi_detections += 1
 
-                        # Count types
-                        if cls == 1 or cls == 3:  # bicycle or motorcycle
-                            bike_detections += 1
-                            frame_bike_detections += 1
-                        elif cls == 2:  # car
+                        # Count types (new model indices: 1=car, 4=motorcycle)
+                        if cls == 4:  # motorcycle
+                            motorcycle_detections += 1
+                            frame_motorcycle_detections += 1
+                        elif cls == 1:  # car
                             car_detections += 1
                             frame_car_detections += 1
 
@@ -303,15 +315,19 @@ def run_detection_with_roi():
 
                     # Visualization
                     if original_frame is not None and not SPEED_OPTIMIZATIONS["disable_display"]:
-                        # Color selection
+                        # Color selection (BGR) — new model class mapping:
                         if cls == 1:
-                            color = (255, 255, 0)  # bicycle - cyan
-                        elif cls == 3:
-                            color = (255, 0, 255)  # motorcycle - magenta
+                            color = (0, 255, 0)    # car       - green
                         elif cls == 2:
-                            color = (0, 255, 0)    # car - green
+                            color = (0, 165, 255)  # bus       - orange
+                        elif cls == 3:
+                            color = (255, 50, 0)   # truck     - blue
+                        elif cls == 4:
+                            color = (255, 0, 255)  # motorcycle - magenta
+                        elif cls == 5:
+                            color = (0, 255, 255)  # rickshaw  - yellow
                         else:
-                            color = (0, 165, 255)  # bus/truck - orange
+                            color = (200, 200, 200)  # fallback  - light grey
 
                         thickness = 3 if in_roi else 1
                         cv2.rectangle(original_frame, (x1, y1), (x2, y2), color, thickness)
@@ -349,7 +365,7 @@ def run_detection_with_roi():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 cv2.putText(original_frame, f"ROI Detections: {frame_roi_detections}", (20, 100),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(original_frame, f"Bikes: {frame_bike_detections} | Cars: {frame_car_detections}", (20, 130),
+                cv2.putText(original_frame, f"Motorcycles: {frame_motorcycle_detections} | Cars: {frame_car_detections}", (20, 130),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 cv2.putText(original_frame, f"CPU Mode | Skip: {SPEED_OPTIMIZATIONS['frame_skip']}x", (20, 160),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -364,7 +380,7 @@ def run_detection_with_roi():
             # Progress log
             if processed_frames % 10 == 0:
                 efficiency = (roi_detections / total_detections * 100) if total_detections > 0 else 0
-                print(f"⚡ Frame: {frame_count} | Processed: {processed_frames} | ROI: {roi_detections}/{total_detections} | Bikes: {bike_detections}")
+                print(f"⚡ Frame: {frame_count} | Processed: {processed_frames} | ROI: {roi_detections}/{total_detections} | Motorcycles: {motorcycle_detections}")
 
     except KeyboardInterrupt:
         print("\n⏹️ Processing stopped by user")
@@ -390,7 +406,7 @@ def run_detection_with_roi():
         print(f"📊 Total Frames: {frame_count} | Processed: {processed_frames}")
         print(f"🎯 Total Detections: {total_detections}")
         print(f"🎯 ROI Detections: {roi_detections} ({efficiency:.1f}% efficiency)")
-        print(f"🚴 Bicycle/Motorcycle: {bike_detections}")
+        print(f"🏍️ Motorcycles: {motorcycle_detections}")
         print(f"🚗 Cars: {car_detections}")
         if csv_writer is not None:
             print(f"📄 Data saved to: {CSV_PATH}")

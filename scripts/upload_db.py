@@ -68,49 +68,66 @@ cloudinary.config(
   api_secret = "-ur7gBt2r7fAHgZENbOj6w8CsWM" 
 )
 
-# Base folder where your images are actually located on your PC
-# Since your CSV uses relative paths like "../output", we need to know where to start looking.
-BASE_IMAGE_DIR = r'C:\Users\syedm\OneDrive\Documents\Traffic Violation System\Intelligent-Traffic-Violation-Detection-System'
-# -----------------------------------------------
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, ".."))
+DEFAULT_CSV = os.path.join(PROJECT_ROOT, "output", "final_consolidated_violations.csv")
+BASE_IMAGE_DIR = PROJECT_ROOT
+
+def get_full_local_path(image_path):
+    if pd.isna(image_path) or not image_path:
+        return None
+    p = str(image_path).strip()
+    if os.path.isabs(p) and os.path.exists(p):
+        return p
+    clean_p = p.replace('/', '\\').replace('..\\', '').lstrip('\\')
+    candidate = os.path.join(BASE_IMAGE_DIR, clean_p)
+    if os.path.exists(candidate):
+        return candidate
+    if "output" in p.replace('/', '\\'):
+        rel = p.replace('/', '\\').split("output", 1)[1].lstrip('\\')
+        candidate = os.path.join(BASE_IMAGE_DIR, "output", rel)
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 def upload_image_to_cloudinary(relative_path):
     """
-    Takes a local relative path, uploads to Cloudinary, 
-    and returns the public URL.
+    Takes a local path (absolute or relative), uploads to Cloudinary, 
+    and returns the public secure URL.
     """
     if pd.isna(relative_path) or relative_path == "":
         return None
 
-    # 1. Clean Path and create the FULL local path
-    # Make sure BASE_IMAGE_DIR is defined at the top of your script!
-    clean_path = relative_path.replace('/', '\\').replace('..\\', '')
-    full_local_path = os.path.join(BASE_IMAGE_DIR, clean_path)
-
-    if not os.path.exists(full_local_path):
-        print(f"Warning: File not found locally: {full_local_path}")
+    full_local_path = get_full_local_path(relative_path)
+    if not full_local_path or not os.path.exists(full_local_path):
+        print(f"Warning: File not found locally: {relative_path}")
         return None
 
-    # 2. GENERATE A CONSISTENT PUBLIC ID
-    # Use the cleaned path, remove the file extension
-    base_name = os.path.splitext(clean_path)[0]
-    # Cloudinary public IDs use forward slashes, even on Windows
+    # Consistent Public ID based on project-relative path
+    try:
+        rel_path = os.path.relpath(full_local_path, BASE_IMAGE_DIR)
+    except Exception:
+        rel_path = os.path.basename(full_local_path)
+
+    base_name = os.path.splitext(rel_path)[0]
     public_id = base_name.replace('\\', '/')
     
     try:
-        # 3. UPLOAD WITH OVERWRITE=TRUE and the consistent public_id
-        # print(f"Uploading {public_id}...") # Uncomment if you want to see progress
         response = cloudinary.uploader.upload(
             full_local_path, 
             public_id=public_id,
             overwrite=True
         )
-        
         return response['secure_url']
     except Exception as e:
-        print(f"Error uploading {clean_path}: {e}")
+        print(f"Error uploading {public_id}: {e}")
         return None
 
-def upload_to_mongodb(csv_file_path):
+def upload_to_mongodb(csv_file_path=None):
+    if csv_file_path is None:
+        csv_file_path = DEFAULT_CSV
+
+    print(f"🔌 Connecting to MongoDB: {DB_NAME} -> {COLLECTION_NAME}...")
     client = MongoClient(MONGO_URI)
     db = client[DB_NAME]
     collection = db[COLLECTION_NAME]
@@ -122,17 +139,17 @@ def upload_to_mongodb(csv_file_path):
     try:
         df = pd.read_csv(csv_file_path)
     except FileNotFoundError:
-        print("Error: CSV file not found.")
+        print(f"Error: CSV file not found: {csv_file_path}")
         return
 
+    print(f"📄 Processing {len(df)} records from {csv_file_path} for Cloudinary & MongoDB...")
     data_to_insert = []
     
-    # Limit rows for testing so you don't upload 1000 images while debugging!
-    # Remove [:5] when ready for full run
     for index, row in df.iterrows(): 
         record = row.to_dict()
-        
-        # --- UPLOAD IMAGES AND SWAP PATHS FOR URLS ---
+        vid = record.get('Vehicle_ID', f'Row {index}')
+        vtype = record.get('Violation_1', 'Violation')
+        print(f"[{index+1}/{len(df)}] Uploading assets for {vid} ({vtype})...")
         
         # 1. Car Image
         record['Car_Image'] = upload_image_to_cloudinary(record.get('Car_Image'))
@@ -143,14 +160,13 @@ def upload_to_mongodb(csv_file_path):
         # 3. Violation Image (if exists)
         record['Violation_Image_1'] = upload_image_to_cloudinary(record.get('Violation_Image_1'))
 
-        # Add to list
         data_to_insert.append(record)
 
     if data_to_insert:
         collection.insert_many(data_to_insert)
-        print(f"Successfully inserted {len(data_to_insert)} records with Cloudinary URLs.")
+        print(f"🎉 Successfully inserted {len(data_to_insert)} records with Cloudinary URLs into MongoDB!")
     else:
         print("Nothing inserted.")
 
 if __name__ == "__main__":
-    upload_to_mongodb(r'C:\Users\syedm\OneDrive\Documents\Traffic Violation System\Intelligent-Traffic-Violation-Detection-System\output\final_consolidated_violations.csv')
+    upload_to_mongodb()
